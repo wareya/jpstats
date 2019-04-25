@@ -1,0 +1,36 @@
+[package]
+name = "jpstats"
+version = "0.1.0"
+authors = ["wareya <wareya@gmail.com>"]
+edition = "2018"
+exclude = [
+    "data/*",
+    "workspace/*",
+]
+
+license = "Apache-2.0"
+
+[dependencies]
+notmecab = { path = "../notmecab-rs" }
+regex = "1"
+sha2 = "0.8"
+csv = "1"
+
+[dependencies.rusqlite]
+version = "0.17"
+features = ["bundled"]
+
+[profile.release]
+opt-level = 3
+debug = 2
+lto = true
+incremental = false
+
+[profile.bench]
+opt-level = 3
+debug = 2
+lto = true
+incremental = false
+
+[profile.dev]
+opt-level = 2
