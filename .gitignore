@@ -1,5 +1,6 @@
 /target
 **/*.rs.bk
 /data
-/workspace
+/workspace/*.db
+/workspace/scripts
 /trash
