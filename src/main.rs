@@ -10,6 +10,8 @@ use rusqlite::{params, Connection};
 
 use sha2::{Sha256, Digest};
 
+use std::env;
+
 mod regression;
 use regression::*;
 
@@ -25,6 +27,12 @@ fn parse_csv_line(text : &str) -> Vec<String>
 fn make_csv_line(fields : &[String]) -> String
 {
     let mut writer = csv::Writer::from_writer(vec!());
+    writer.write_record(fields).unwrap();
+    String::from_utf8(writer.into_inner().unwrap()).unwrap().replace('\n', "")
+}
+fn make_tsv_line(fields : &[String]) -> String
+{
+    let mut writer = csv::WriterBuilder::new().delimiter(b'\t').quote_style(csv::QuoteStyle::Necessary).from_writer(vec!());
     writer.write_record(fields).unwrap();
     String::from_utf8(writer.into_inner().unwrap()).unwrap().replace('\n', "")
 }
@@ -365,6 +373,184 @@ fn read_filters(text : &str, lemma_indexes : &[usize], spelling_indexes : &[usiz
     ret
 }
 
+#[derive(Debug)]
+enum MathElement {
+    Name(String),
+    Num(f64),
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Log
+}
+
+impl MathElement {
+    fn apply(&self, stack : &mut Vec<f64>, vars : &HashMap<String, f64>)
+    {
+        match self
+        {
+            MathElement::Num(val) => stack.push(*val),
+            MathElement::Name(name) => stack.push(*vars.get(name).unwrap()),
+            MathElement::Add =>
+            {
+                let r = stack.pop().unwrap();
+                let l = stack.pop().unwrap();
+                stack.push(l + r);
+            }
+            MathElement::Sub =>
+            {
+                let r = stack.pop().unwrap();
+                let l = stack.pop().unwrap();
+                stack.push(l - r);
+            }
+            MathElement::Mul =>
+            {
+                let r = stack.pop().unwrap();
+                let l = stack.pop().unwrap();
+                stack.push(l * r);
+            }
+            MathElement::Div =>
+            {
+                let r = stack.pop().unwrap();
+                let l = stack.pop().unwrap();
+                stack.push(l / r);
+            }
+            MathElement::Log =>
+            {
+                let u = stack.pop().unwrap();
+                stack.push(u.ln());
+            }
+        }
+    }
+}
+
+fn parse_math(fields : &[String]) -> Vec<MathElement>
+{
+    let mut ret = Vec::new();
+    for text in fields
+    {
+        if let Ok(num) = text.parse::<f64>()
+        {
+            ret.push(MathElement::Num(num));
+            continue;
+        }
+        match text.as_str()
+        {
+            "+" => ret.push(MathElement::Add),
+            "-" => ret.push(MathElement::Sub),
+            "*" => ret.push(MathElement::Mul),
+            "/" => ret.push(MathElement::Div),
+            "ln" => ret.push(MathElement::Log),
+            _ => ret.push(MathElement::Name(text.to_string()))
+        }
+    }
+    ret
+}
+
+fn run_math(math : &Vec<MathElement>, variables : &HashMap<String, f64>) -> f64
+{
+    let mut stack = Vec::new();
+    for op in math
+    {
+        op.apply(&mut stack, &variables);
+    }
+    assert!(stack.len() == 1);
+    stack[0]
+}
+
+struct RegressionTarget {
+    input : Vec<Vec<MathElement>>,
+    output : Vec<MathElement>
+}
+
+impl RegressionTarget {
+    fn blank() -> RegressionTarget
+    {
+        RegressionTarget{input : Vec::new(), output : Vec::new()}
+    }
+}
+
+struct RegressionConfig {
+    using : Vec<String>,
+    vars : Vec<(String, Vec<MathElement>)>,
+    targets : Vec<(String, RegressionTarget)>
+}
+
+impl RegressionConfig {
+    fn load(text : &str) -> RegressionConfig
+    {
+        let mut using = Vec::new();
+        let mut vars = Vec::new();
+        let mut targets = Vec::new();
+        let mut mode = 0;
+        for line in text.lines()
+        {
+            let mut do_continue = true;
+            match line
+            {
+                "" => continue,
+                ">using"   => mode = 1,
+                ">mapping" => mode = 2,
+                ">metric"  =>
+                {
+                    targets.push(("".to_string(), RegressionTarget::blank()));
+                    mode = 3
+                },
+                ">input"   => mode = 5,
+                ">output"  => mode = 6,
+                _ => do_continue = false
+            }
+            if do_continue
+            {
+                continue;
+            }
+            match mode
+            {
+                0 => continue,
+                1 => using.push(line.to_string()),
+                2 =>
+                {
+                    let mut fields = line.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>();
+                    let name = fields.remove(0);
+                    vars.push((name, parse_math(&fields[..])));
+                }
+                3 =>
+                {
+                    targets.last_mut().unwrap().0 = line.to_string();
+                    mode = 4;
+                }
+                4 => panic!("must only have one line of text immediately after >metric line"),
+                5 => targets.last_mut().unwrap().1.input.push(parse_math(&line.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>())),
+                6 => targets.last_mut().unwrap().1.output = parse_math(&line.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>()),
+                _ => panic!("internal error: unknown mode {} when loading RegressionConfig", mode)
+            }
+        }
+        for column in &using
+        {
+            match column.as_str()
+            {
+                "kanji_1plus" |
+                "kanji_2plus" |
+                "chars" |
+                "lexes" |
+                "sentences" |
+                "lines" |
+                "count_han" |
+                "count_hira" |
+                "count_kata" |
+                "runs_han" |
+                "runs_hira" |
+                "runs_kata" |
+                "target_90" |
+                "target_925" |
+                "target_95" => {}
+                _ => panic!("disallowed column name {} in >using configuration (may only be one of certain whitelisted values)")
+            }
+        }
+        RegressionConfig { using, vars, targets }
+    }
+}
+
 struct FreqSystem {
     db_texts : Connection,
     db_freqs : Connection,
@@ -380,12 +566,16 @@ struct FreqSystem {
     vocab_filters : Vec<RejectionFilter>,
     
     merge_blacklist : HashSet<String>,
+    
+    whitelist_bad_quotes : HashSet<String>,
+    
+    regression_config : RegressionConfig,
 }
 
 impl FreqSystem {
     fn init() -> FreqSystem
     {
-        // filtered and deduplicated on loading
+        // filtered and deduplicated on insertion into db
         let db_texts = Connection::open(Path::new("workspace/texts.db")).unwrap();
         db_texts.execute("create table if not exists texts (name text unique, sha256 text, content text)", params![]).unwrap();
         
@@ -467,7 +657,12 @@ impl FreqSystem {
         
         let merge_blacklist = file_to_string(&mut File::open("workspace/config/merge_blacklist.txt").unwrap()).lines().map(|x| x.trim().to_string()).collect();
         
-        FreqSystem{db_texts, db_freqs, db_stats, analyzer, furi_regex, lemma_indexes, spelling_indexes, punctuation_filters, base_filters, vocab_filters, merge_blacklist }
+        let test_whitelist = file_to_string(&mut File::open("workspace/config/allowed_test_failures.txt").unwrap()).lines().map(|x| x.to_string()).collect::<Vec<_>>();
+        let whitelist_bad_quotes = test_whitelist.iter().filter(|x| x.starts_with("quotes:")).map(|x| x.split(':').nth(1).unwrap().to_string()).collect();
+        
+        let regression_config = RegressionConfig::load(&file_to_string(&mut File::open("workspace/config/regression.txt").unwrap()));
+        
+        FreqSystem{db_texts, db_freqs, db_stats, analyzer, furi_regex, lemma_indexes, spelling_indexes, punctuation_filters, base_filters, vocab_filters, merge_blacklist, whitelist_bad_quotes, regression_config }
     }
     fn load_file(&mut self, path : &str)
     {
@@ -938,18 +1133,61 @@ impl FreqSystem {
             
         println!("done running stats");
     }
-    fn single_regression<F1, F2>(&mut self, name : &str, hash : &str, base_data : &Vec<Vec<f64>>, make_input : F1, make_output : F2)
-        where
-            F1: Fn(&Vec<f64>) -> Vec<f64>,
-            F2: Fn(&Vec<f64>) -> f64,
+    fn check_formatting_errors(&mut self)
     {
-        // FIXME make this more configurable
-        
-        let mut checker = self.db_stats.prepare("select name, sha256 from regression where name=? and sha256=?").unwrap();
+        let mut finder = self.db_texts.prepare("select name, sha256, content from texts").unwrap();
+        println!("checking scripts for possible formatting problems");
+        for _ in finder.query_map(params![], |row|
+        {
+            let name : String = row.get(0).unwrap();
+            let content : String = row.get(2).unwrap();
+            
+            let mut bad_quote_lines = 0;
+            
+            for line in content.lines()
+            {
+                let mut left = 0;
+                let mut right = 0;
+                for c in line.chars()
+                {
+                    if c == '「'
+                    {
+                        left += 1;
+                    }
+                    if c == '」'
+                    {
+                        right += 1;
+                    }
+                }
+                if right != left
+                {
+                    bad_quote_lines += 1;
+                }
+            }
+            if bad_quote_lines > 100 && !self.whitelist_bad_quotes.contains(&name)
+            {
+                println!("script `{}` may have broken linewraps ({})", name, bad_quote_lines);
+            }
+            Ok(())
+        }).unwrap() { }
+    }
+    fn single_regression(db_stats : &mut Connection, name : &str, hash : &str, base_data : &Vec<HashMap<String, f64>>, target : &RegressionTarget)
+    {
+        let mut checker = db_stats.prepare("select name, sha256 from regression where name=? and sha256=?").unwrap();
         if checker.query_row(params![name, hash], |_| Ok(())).is_err()
         {
-            let input_data = base_data.iter().map(make_input).collect::<Vec<_>>();
-            let output_data = base_data.iter().map(make_output).collect();
+            let mut input_data = Vec::new();
+            let mut output_data = Vec::new();
+            for variables in base_data.iter()
+            {
+                let mut input = Vec::new();
+                for math in target.input.iter()
+                {
+                    input.push(run_math(math, variables));
+                }
+                input_data.push(input);
+                output_data.push(run_math(&target.output, variables));
+            }
             let mut model = Vec::new();
             for _ in 0..input_data[0].len()
             {
@@ -992,7 +1230,7 @@ impl FreqSystem {
             //    println!("{}", p);
             //}
             let model_csv = make_csv_line(&model.drain(..).map(|x| x.to_string()).collect::<Vec<_>>());
-            let mut inserter = self.db_stats.prepare_cached("insert or replace into regression values (?,?,?,?)").unwrap();
+            let mut inserter = db_stats.prepare_cached("insert or replace into regression values (?,?,?,?)").unwrap();
             inserter.execute(params![name, hash, model_csv, rsq]).unwrap();
         }
     }
@@ -1007,255 +1245,48 @@ impl FreqSystem {
         let hashes = hashes.join("").to_string();
         let hash = hash_string(&hashes);
         
-        let base_data =
-        self.db_stats
-        .prepare("select
-            sentences,
-            
-            count_han,
-            count_hira,
-            count_kata,
-            
-            runs_han,
-            runs_hira,
-            runs_kata,
-            
-            target_925
-            
-            from stats")
-        .unwrap().query_map(params![], |row|
+        let mut using = Vec::new();
+        let mut select_statement = "select ".to_string();
+        for (i, var) in self.regression_config.using.iter().enumerate()
         {
-            let mut ret = Vec::new();
+            if i != 0
+            {
+                select_statement += &",";
+            }
+            select_statement += var;
+            using.push(var.clone());
+        }
+        select_statement += &" from stats";
+        
+        println!("using `{}` {:?}", select_statement, using);
+        
+        let base_data = self.db_stats.prepare(&select_statement)
+        .unwrap()
+        .query_map(params![], |row|
+        {
+            let mut variables = HashMap::new();
             for i in 0..row.column_count()
             {
-                let val : f64 = row.get(i).unwrap();
-                ret.push(val);
+                println!("{:?}", row.get_raw(i));
+                let val : rusqlite::Result<f64> = row.get(i);
+                println!("{:?}", val);
+                let val = val.unwrap();
+                let name = using[i].clone();
+                variables.insert(name, val);
             }
-            Ok(ret)
+            for (name, math) in self.regression_config.vars.iter()
+            {
+                variables.insert(name.clone(), run_math(math, &variables));
+            }
+            Ok(variables)
         }).unwrap().map(|x| x.unwrap()).collect::<Vec<_>>();
         
-        self.single_regression("a", &hash, &base_data,
-            |row : &Vec<f64>|
-            {
-                let sentences = &row[0];
-                
-                let count_han = &row[1];
-                let count_hira = &row[2];
-                let count_kata = &row[3];
-                
-                let runs_han = &row[4];
-                let runs_hira = &row[5];
-                let runs_kata = &row[6];
-                
-                let avg_counts = (count_han+count_hira+count_kata)/3.0;
-                let avg_runs = (runs_han+runs_hira+runs_kata)/3.0;
-                
-                let prop_han = count_han/avg_counts;
-                let prop_hira = count_hira/avg_counts;
-                let prop_kata = count_kata/avg_counts;
-                
-                let prop_runs_han = runs_han/avg_runs;
-                let prop_runs_hira = runs_hira/avg_runs;
-                let prop_runs_kata = runs_kata/avg_runs;
-                
-                let norm_han = (count_han/runs_han)*prop_han;
-                let norm_hira = (count_hira/runs_hira)*prop_hira;
-                let norm_kata = (count_kata/runs_kata)*prop_kata;
-                
-                let sentence_han = count_han/sentences;
-                let sentence_hira = count_hira/sentences;
-                let sentence_kata = count_kata/sentences;
-                
-                let runs_sentence = (runs_han+runs_hira+runs_kata)/sentences;
-                let sentence_len = (count_han+count_hira+count_kata)/sentences;
-                
-                vec!(
-                    prop_han.ln(),
-                    prop_hira.ln(),
-                    prop_kata.ln(),
-                    
-                    prop_runs_han.ln(),
-                    prop_runs_hira.ln(),
-                    prop_runs_kata.ln(),
-                    
-                    norm_han,
-                    norm_hira,
-                    norm_kata,
-                    
-                    sentence_han,
-                    sentence_hira,
-                    sentence_kata,
-                    
-                    1.0/runs_sentence,
-                    sentence_len.ln(),
-                    
-                    1.0
-                )
-            },
-            |row : &Vec<f64>|
-            {
-                let out = row[7]/15000.0;
-                println!("desired output {}", (1.0-out)*50.0+50.0);
-                out
-            }
-        );
+        println!("starting");
         
-        self.single_regression("b", &hash, &base_data,
-            |row : &Vec<f64>|
-            {
-                let count_han = &row[1];
-                let count_hira = &row[2];
-                let count_kata = &row[3];
-                
-                let runs_han = &row[4];
-                let runs_hira = &row[5];
-                let runs_kata = &row[6];
-                
-                let avg_counts = (count_han+count_hira+count_kata)/3.0;
-                let avg_runs = (runs_han+runs_hira+runs_kata)/3.0;
-                
-                let prop_han = count_han/avg_counts;
-                let prop_hira = count_hira/avg_counts;
-                let prop_kata = count_kata/avg_counts;
-                
-                let prop_runs_han = runs_han/avg_runs;
-                let prop_runs_hira = runs_hira/avg_runs;
-                let prop_runs_kata = runs_kata/avg_runs;
-                
-                let runlen_han = count_han/runs_han;
-                let runlen_hira = count_hira/runs_hira;
-                let runlen_kata = count_kata/runs_kata;
-                
-                vec!(
-                    runlen_han,
-                    runlen_hira,
-                    runlen_kata,
-                    
-                    prop_han.ln(),
-                    prop_hira.ln(),
-                    prop_kata.ln(),
-                    
-                    prop_runs_han.ln(),
-                    prop_runs_hira.ln(),
-                    prop_runs_kata.ln(),
-                    
-                    1.0
-                )
-            },
-            |row : &Vec<f64>|
-            {
-                let out = row[7]/15000.0;
-                println!("desired output {}", (1.0-out)*50.0+50.0);
-                out
-            }
-        );
-        
-        self.single_regression("c", &hash, &base_data,
-            |row : &Vec<f64>|
-            {
-                let count_han = &row[1];
-                let count_hira = &row[2];
-                let count_kata = &row[3];
-                
-                let runs_han = &row[4];
-                let runs_hira = &row[5];
-                let runs_kata = &row[6];
-                
-                let avg_counts = (count_han+count_hira+count_kata)/3.0;
-                let avg_runs = (runs_han+runs_hira+runs_kata)/3.0;
-                
-                let prop_han = count_han/avg_counts;
-                let prop_hira = count_hira/avg_counts;
-                let prop_kata = count_kata/avg_counts;
-                
-                let prop_runs_han = runs_han/avg_runs;
-                let prop_runs_hira = runs_hira/avg_runs;
-                let prop_runs_kata = runs_kata/avg_runs;
-                
-                let norm_han = (count_han/runs_han)*prop_han;
-                let norm_hira = (count_hira/runs_hira)*prop_hira;
-                let norm_kata = (count_kata/runs_kata)*prop_kata;
-                
-                vec!(
-                    norm_han,
-                    norm_hira,
-                    norm_kata,
-                    
-                    prop_han.ln(),
-                    prop_hira.ln(),
-                    prop_kata.ln(),
-                    
-                    prop_runs_han.ln(),
-                    prop_runs_hira.ln(),
-                    prop_runs_kata.ln(),
-                    
-                    1.0
-                )
-            },
-            |row : &Vec<f64>|
-            {
-                let out = row[7]/15000.0;
-                println!("desired output {}", (1.0-out)*50.0+50.0);
-                out
-            }
-        );
-        
-        self.single_regression("d", &hash, &base_data,
-            |row : &Vec<f64>|
-            {
-                let sentences = &row[0];
-                
-                let count_han = &row[1];
-                let count_hira = &row[2];
-                let count_kata = &row[3];
-                
-                let runs_han = &row[4];
-                let runs_hira = &row[5];
-                let runs_kata = &row[6];
-                
-                let avg_counts = (count_han+count_hira+count_kata)/3.0;
-                let avg_runs = (runs_han+runs_hira+runs_kata)/3.0;
-                
-                let prop_han = count_han/avg_counts;
-                let prop_hira = count_hira/avg_counts;
-                let prop_kata = count_kata/avg_counts;
-                
-                let prop_runs_han = runs_han/avg_runs;
-                let prop_runs_hira = runs_hira/avg_runs;
-                let prop_runs_kata = runs_kata/avg_runs;
-                
-                let norm_han = (count_han/runs_han)*prop_han;
-                let norm_hira = (count_hira/runs_hira)*prop_hira;
-                let norm_kata = (count_kata/runs_kata)*prop_kata;
-                
-                let sentence_len = (count_han+count_hira+count_kata)/sentences;
-                
-                vec!(
-                    norm_han,
-                    norm_hira,
-                    norm_kata,
-                    
-                    prop_han.ln(),
-                    prop_hira.ln(),
-                    prop_kata.ln(),
-                    
-                    prop_runs_han.ln(),
-                    prop_runs_hira.ln(),
-                    prop_runs_kata.ln(),
-                    
-                    sentence_len.ln(),
-                    
-                    1.0
-                )
-            },
-            |row : &Vec<f64>|
-            {
-                let out = row[7]/15000.0;
-                println!("desired output {}", (1.0-out)*50.0+50.0);
-                out
-            }
-        );
-        
+        for (name, target) in self.regression_config.targets.iter()
+        {
+            FreqSystem::single_regression(&mut self.db_stats, name, &hash, &base_data, target);
+        }
     }
 }
 
@@ -1279,9 +1310,18 @@ fn get_filenames(location : &str) -> Vec<String>
     read_dir(Path::new(location)).unwrap().map(|entry| entry.unwrap().path().into_os_string().into_string().unwrap()).filter(|s| s.ends_with(".txt")).collect::<Vec<_>>()
 }
 
-fn main()
+fn print_help()
 {
-    let mut system = FreqSystem::init();
+    println!("usage: ./jpstats.exe [mode]");
+    println!("modes:");
+    println!("  update");
+    println!("      re-analyzes scripts and regenerates affected data in databases");
+    println!("  stats");
+    println!("      prints stats as tab-separated values");
+}
+
+fn update(system : &mut FreqSystem)
+{
     for fname in get_filenames("workspace/scripts/")
     {
         system.load_file(&fname);
@@ -1290,6 +1330,42 @@ fn main()
     system.build_merged_freqlists();
     system.run_stats();
     system.run_regression();
+    system.check_formatting_errors();
+}
+
+/*
+fn stats()
+{
+    
+    make_tsv_line
+}
+*/
+
+fn main()
+{
+    let mut system = FreqSystem::init();
+    
+    let args = env::args().collect::<Vec<_>>();
+    
+    if let Some(arg) = args.get(1)
+    {
+        match arg.as_str()
+        {
+            
+            "update" =>
+            {
+                update(&mut system);
+            }
+            _ =>
+            {
+                print_help();
+            }
+        }
+    }
+    else
+    {
+        print_help();
+    }
 }
 
 #[cfg(test)]
