@@ -60,6 +60,22 @@ pub (crate) fn predict(model : &Vec<f64>, indata : &Vec<Vec<f64>>, outdata : &Ve
         predictions.push(prediction);
     }
     
-    let myrsq = rsq(outdata, &predictions);
-    return (predictions, myrsq);
+    let rsq = rsq(outdata, &predictions);
+    (predictions, rsq)
 }
+
+
+pub (crate) fn predict_single(model : &Vec<f64>, input : &Vec<f64>) -> f64
+{
+    let mut prediction = 0.0;
+    for (j, val) in input.iter().enumerate()
+    {
+        prediction += *val * model[j];
+    }
+    prediction
+}
+
+//pub (crate) fn predict_single(model : &Vec<f64>, input : &Vec<f64>) -> f64
+//{
+//    input.iter().enumerate().map(|(j, val)| *val * model[j]).sum::<f64>()
+//}

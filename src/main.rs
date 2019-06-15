@@ -1,4 +1,4 @@
-use std::io::{BufReader, Read, Seek, SeekFrom};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::fs::{File, read_dir};
 use std::path::Path;
 
@@ -30,9 +30,9 @@ fn make_csv_line(fields : &[String]) -> String
     writer.write_record(fields).unwrap();
     String::from_utf8(writer.into_inner().unwrap()).unwrap().replace('\n', "")
 }
-fn make_tsv_line(fields : &[String]) -> String
+fn make_ssv_line(fields : &[String]) -> String
 {
-    let mut writer = csv::WriterBuilder::new().delimiter(b'\t').quote_style(csv::QuoteStyle::Necessary).from_writer(vec!());
+    let mut writer = csv::WriterBuilder::new().delimiter(b';').quote_style(csv::QuoteStyle::Necessary).from_writer(vec!());
     writer.write_record(fields).unwrap();
     String::from_utf8(writer.into_inner().unwrap()).unwrap().replace('\n', "")
 }
@@ -81,7 +81,7 @@ fn is_lexical(c : char) -> bool
 }
 fn is_sentence_separator(c : char) -> bool
 {
-    "。.！？⁉!?…".contains(c)
+    "。.！？⁉!?…―".contains(c)
 }
 fn is_comma_or_quote_etc(c : char) -> bool
 {
@@ -199,6 +199,20 @@ impl LemmaInfo {
             *count *= factor;
         }
     }
+}
+
+fn get_shift_jis_size(c : char) -> usize
+{
+    let ord = c as u32;
+    if ord <= 0x7F
+    {
+        return 1;
+    }
+    if ord >= 0xFF61 && ord <= 0xFF9F
+    {
+        return 1;
+    }
+    return 2;
 }
 
 fn lemmainfo_to_string(lemma : &String, info : &LemmaInfo) -> String
@@ -365,8 +379,6 @@ fn read_filters(text : &str, lemma_indexes : &[usize], spelling_indexes : &[usiz
             let field = if is_lemma_filter { lemma_indexes } else { spelling_indexes } [raw_field];
             let text = fields[1].clone();
             
-            eprintln!("creating filter {} {} {} {}", field, raw_field, is_lemma_filter, text);
-            
             ret.push(RejectionFilter{field, raw_field, is_lemma_filter, text});
         }
     }
@@ -458,15 +470,26 @@ fn run_math(math : &Vec<MathElement>, variables : &HashMap<String, f64>) -> f64
     stack[0]
 }
 
+fn run_math_stack(mut stack : Vec<f64>, math : &Vec<MathElement>, variables : &HashMap<String, f64>) -> f64
+{
+    for op in math
+    {
+        op.apply(&mut stack, &variables);
+    }
+    assert!(stack.len() == 1);
+    stack[0]
+}
+
 struct RegressionTarget {
     input : Vec<Vec<MathElement>>,
-    output : Vec<MathElement>
+    output : Vec<MathElement>,
+    recover : Vec<MathElement>
 }
 
 impl RegressionTarget {
     fn blank() -> RegressionTarget
     {
-        RegressionTarget{input : Vec::new(), output : Vec::new()}
+        RegressionTarget{input : Vec::new(), output : Vec::new(), recover : Vec::new()}
     }
 }
 
@@ -474,6 +497,30 @@ struct RegressionConfig {
     using : Vec<String>,
     vars : Vec<(String, Vec<MathElement>)>,
     targets : Vec<(String, RegressionTarget)>
+}
+
+fn ensure_valid_stats_column(text : &str)
+{
+    match text
+    {
+        "kanji_1plus" |
+        "kanji_2plus" |
+        "chars" |
+        "lexes" |
+        "sentences" |
+        "lines" |
+        "sjis_bytes" |
+        "count_han" |
+        "count_hira" |
+        "count_kata" |
+        "runs_han" |
+        "runs_hira" |
+        "runs_kata" |
+        "target_90" |
+        "target_925" |
+        "target_95" => {}
+        _ => panic!("disallowed column name {} in >using configuration (may only be one of certain whitelisted values)")
+    }
 }
 
 impl RegressionConfig {
@@ -498,6 +545,7 @@ impl RegressionConfig {
                 },
                 ">input"   => mode = 5,
                 ">output"  => mode = 6,
+                ">recover"  => mode = 7,
                 _ => do_continue = false
             }
             if do_continue
@@ -522,30 +570,13 @@ impl RegressionConfig {
                 4 => panic!("must only have one line of text immediately after >metric line"),
                 5 => targets.last_mut().unwrap().1.input.push(parse_math(&line.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>())),
                 6 => targets.last_mut().unwrap().1.output = parse_math(&line.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>()),
+                7 => targets.last_mut().unwrap().1.recover = parse_math(&line.split_whitespace().map(|x| x.to_string()).collect::<Vec<_>>()),
                 _ => panic!("internal error: unknown mode {} when loading RegressionConfig", mode)
             }
         }
         for column in &using
         {
-            match column.as_str()
-            {
-                "kanji_1plus" |
-                "kanji_2plus" |
-                "chars" |
-                "lexes" |
-                "sentences" |
-                "lines" |
-                "count_han" |
-                "count_hira" |
-                "count_kata" |
-                "runs_han" |
-                "runs_hira" |
-                "runs_kata" |
-                "target_90" |
-                "target_925" |
-                "target_95" => {}
-                _ => panic!("disallowed column name {} in >using configuration (may only be one of certain whitelisted values)")
-            }
+            ensure_valid_stats_column(column.as_str());
         }
         RegressionConfig { using, vars, targets }
     }
@@ -568,6 +599,7 @@ struct FreqSystem {
     merge_blacklist : HashSet<String>,
     
     whitelist_bad_quotes : HashSet<String>,
+    whitelist_bad_commas : HashSet<String>,
     
     regression_config : RegressionConfig,
 }
@@ -596,6 +628,8 @@ impl FreqSystem {
                 lexes integer,       -- number of 'lexeme events' (e.g. 食べていた is four lexeme events, 食べ|て|い|た)
                 sentences integer,   -- number of 'sentences'
                 lines integer,       -- number of lines that seem to have content text on them
+                
+                sjis_bytes integer,  -- number of bytes the text takes up in shift-jis
                 
                 count_han real,  -- number of kanji in the text
                 count_hira real, -- number of hiragana in the text
@@ -659,10 +693,11 @@ impl FreqSystem {
         
         let test_whitelist = file_to_string(&mut File::open("workspace/config/allowed_test_failures.txt").unwrap()).lines().map(|x| x.to_string()).collect::<Vec<_>>();
         let whitelist_bad_quotes = test_whitelist.iter().filter(|x| x.starts_with("quotes:")).map(|x| x.split(':').nth(1).unwrap().to_string()).collect();
+        let whitelist_bad_commas = test_whitelist.iter().filter(|x| x.starts_with("commas:")).map(|x| x.split(':').nth(1).unwrap().to_string()).collect();
         
         let regression_config = RegressionConfig::load(&file_to_string(&mut File::open("workspace/config/regression.txt").unwrap()));
         
-        FreqSystem{db_texts, db_freqs, db_stats, analyzer, furi_regex, lemma_indexes, spelling_indexes, punctuation_filters, base_filters, vocab_filters, merge_blacklist, whitelist_bad_quotes, regression_config }
+        FreqSystem{db_texts, db_freqs, db_stats, analyzer, furi_regex, lemma_indexes, spelling_indexes, punctuation_filters, base_filters, vocab_filters, merge_blacklist, whitelist_bad_quotes, whitelist_bad_commas, regression_config }
     }
     fn load_file(&mut self, path : &str)
     {
@@ -674,7 +709,7 @@ impl FreqSystem {
         {
             return;
         }
-        println!("adding text for {}", name);
+        eprintln!("adding text for {}", name);
         
         let mut text = file_to_string(&mut file);
         
@@ -696,6 +731,48 @@ impl FreqSystem {
         }).filter(|line| line != "").collect::<Vec<_>>().join("\n");
         
         self.db_texts.execute("insert or replace into texts values (?,?,?)", params![name, hash, text]).unwrap();
+    }
+    fn delete_removed(&mut self, fnames : &Vec<String>)
+    {
+        let fnames = fnames.iter().map(|path| Path::new(path).file_stem().unwrap().to_os_string().into_string().unwrap()).collect::<HashSet<_,>>();
+        let mut to_delete = Vec::new();
+        let mut finder = self.db_texts.prepare("select name from texts").unwrap();
+        eprintln!("deleting removed scripts from texts");
+        for _ in finder.query_map(params![], |row|
+        {
+            let name : String = row.get(0).unwrap();
+            if !fnames.contains(&name)
+            {
+                eprintln!("deleting {}", name);
+                to_delete.push(name);
+            }
+            Ok(())  
+        }).unwrap(){}
+        
+        for name in to_delete
+        {
+            self.db_texts.execute("delete from texts where name=?", params![name]).unwrap();
+        }
+        
+        let mut to_delete = Vec::new();
+        let mut finder = self.db_stats.prepare("select name from stats").unwrap();
+        eprintln!("deleting removed scripts from stats");
+        for _ in finder.query_map(params![], |row|
+        {
+            let name : String = row.get(0).unwrap();
+            if !fnames.contains(&name)
+            {
+                eprintln!("deleting {}", name);
+                to_delete.push(name);
+            }
+            Ok(())  
+        }).unwrap(){}
+        
+        for name in to_delete
+        {
+            self.db_stats.execute("delete from stats where name=?", params![name]).unwrap();
+        }
+        
     }
     fn analysis_to_freqlist(&self, analysis : HashMap<FreqEvent, u64>) -> HashMap<String, LemmaInfo>
     {
@@ -743,7 +820,7 @@ impl FreqSystem {
     fn run_analysis(&mut self)
     {
         let mut finder = self.db_texts.prepare("select name, sha256, content from texts").unwrap();
-        println!("running analysis");
+        eprintln!("running analysis");
         for _ in finder.query_map(params![], |row|
         {
             let name : String = row.get(0).unwrap();
@@ -753,7 +830,7 @@ impl FreqSystem {
             let mut checker = self.db_freqs.prepare_cached("select name, sha256 from freqlists where name=? and sha256=?").unwrap();
             if checker.query_row(params![name, sha256], |_| Ok(())).is_err()
             {
-                println!("analyzing {}", name);
+                eprintln!("analyzing {}", name);
                 let analysis = self.analyzer.analyze_text(&content.as_str());
                 let freqlist = self.analysis_to_freqlist(analysis);
                 let freqlist = self.freqmap_to_freqstr(freqlist);
@@ -807,7 +884,7 @@ impl FreqSystem {
     {
         let filters = self.get_filters(filter_grammar);
         let mut semi_merged = HashMap::new();
-        println!("collecting");
+        eprintln!("collecting");
         
         let mut finder = self.db_freqs.prepare("select freqlist, name from freqlists").unwrap();
         let mut count : usize = 0;
@@ -818,7 +895,7 @@ impl FreqSystem {
             let name : String = row.get(1).unwrap();
             if self.merge_blacklist.contains(&name)
             {
-                println!("skipping ({}) (blacklisted)", name);
+                eprintln!("skipping ({}) (blacklisted)", name);
                 return Ok(());
             }
             print!("testing a list ({}) ...", name);
@@ -827,10 +904,10 @@ impl FreqSystem {
             let total = self.filtered_token_count(&list, &filters);
             if total < threshold
             {
-                println!(" not collecting ({} vs {})", total, threshold);
+                eprintln!(" not collecting ({} vs {})", total, threshold);
                 return Ok(());
             }
-            println!(" collecting ({})", total);
+            eprintln!(" collecting ({})", total);
             let norm = 1_000_000.0 / total;
             for (key, mut info) in list.drain()
             {
@@ -845,7 +922,7 @@ impl FreqSystem {
         
         for name in collected_names
         {
-            println!("{}", name);
+            eprintln!("{}", name);
         }
         
         let mut median_cropping = if count == 0 { 0 } else { (count - 1)/2 };
@@ -855,7 +932,7 @@ impl FreqSystem {
         }
         let median_cropping = median_cropping as usize;
         
-        println!("collected {} lists; merging", count);
+        eprintln!("collected {} lists; merging", count);
         let mut merged = HashMap::new();
         for (key, mut entries) in semi_merged.drain()
         {
@@ -870,12 +947,12 @@ impl FreqSystem {
                 target.merge(entry);
             }
         }
-        println!("merged; filtering");
+        eprintln!("merged; filtering");
         
         merged = self.filter_list(merged, &filters);
         merged = self.normalize_list(merged);
         
-        println!("filtered");
+        eprintln!("filtered");
         
         merged
     }
@@ -893,7 +970,7 @@ impl FreqSystem {
         let mut checker = self.db_freqs.prepare("select name, sha256 from merged where name=\"vocab\" and sha256=?").unwrap();
         if checker.query_row(params![hash], |_| Ok(())).is_err()
         {
-            println!("merging vocab list");
+            eprintln!("merging vocab list");
             let freqlist = self.build_single_merged_freqlist(75000.0, true);
             let freqlist = self.freqmap_to_freqstr(freqlist);
             let mut inserter = self.db_freqs.prepare_cached("insert or replace into merged values (\"vocab\",?,?)").unwrap();
@@ -902,7 +979,7 @@ impl FreqSystem {
         let mut checker = self.db_freqs.prepare("select name, sha256 from merged where name=\"all\" and sha256=?").unwrap();
         if checker.query_row(params![hash], |_| Ok(())).is_err()
         {
-            println!("merging vocab-and-grammar list");
+            eprintln!("merging vocab-and-grammar list");
             let freqlist = self.build_single_merged_freqlist(150000.0, false);
             let freqlist = self.freqmap_to_freqstr(freqlist);
             let mut inserter = self.db_freqs.prepare_cached("insert or replace into merged values (\"all\",?,?)").unwrap();
@@ -1004,7 +1081,7 @@ impl FreqSystem {
         let filters = self.get_filters(true);
         
         let mut finder = self.db_texts.prepare("select name, sha256, content from texts").unwrap();
-        println!("running stats");
+        eprintln!("running stats");
         for _ in finder.query_map(params![], |row|
         {
             let name : String = row.get(0).unwrap();
@@ -1016,7 +1093,7 @@ impl FreqSystem {
             {
                 return Ok(());
             }
-            println!("running stats for {}", name);
+            eprintln!("running stats for {}", name);
             
             // lexeme count
             
@@ -1053,6 +1130,8 @@ impl FreqSystem {
             
             let mut sentences = 0;
             
+            let mut shift_jis_size = 0;
+            
             for ref line in content.lines()
             {
                 count_char_type(&line, is_han, &mut count_han, &mut runs_han);
@@ -1064,6 +1143,7 @@ impl FreqSystem {
                 
                 for c in line.chars()
                 {
+                    shift_jis_size += get_shift_jis_size(c);
                     if is_countable_char(c)
                     {
                         chars += 1;
@@ -1097,7 +1177,7 @@ impl FreqSystem {
             }
             
             self.db_stats.execute(
-                "insert or replace into stats values (?,?, ?,?, ?,?,?,?, ?,?,?, ?,?,?, ?,?,?, ?,?,?)",
+                "insert or replace into stats values (?,?, ?,?, ?,?,?,?, ?, ?,?,?, ?,?,?, ?,?,?, ?,?,?)",
                 params![
                     name,
                     sha256,
@@ -1109,6 +1189,8 @@ impl FreqSystem {
                     lexemes as i64,
                     sentences as i64,
                     lines as i64,
+                    
+                    shift_jis_size as i64,
                     
                     count_han as i64,
                     count_hiragana as i64,
@@ -1131,42 +1213,44 @@ impl FreqSystem {
             Ok(())
         }).unwrap(){}
             
-        println!("done running stats");
+        eprintln!("done running stats");
     }
     fn check_formatting_errors(&mut self)
     {
         let mut finder = self.db_texts.prepare("select name, sha256, content from texts").unwrap();
-        println!("checking scripts for possible formatting problems");
+        eprintln!("checking scripts for possible formatting problems");
         for _ in finder.query_map(params![], |row|
         {
             let name : String = row.get(0).unwrap();
             let content : String = row.get(2).unwrap();
             
             let mut bad_quote_lines = 0;
+            let mut bad_comma_lines = 0;
             
             for line in content.lines()
             {
-                let mut left = 0;
-                let mut right = 0;
-                for c in line.chars()
+                let chars = line.trim().chars().collect::<Vec<_>>();
+                if chars.is_empty()
                 {
-                    if c == '「'
-                    {
-                        left += 1;
-                    }
-                    if c == '」'
-                    {
-                        right += 1;
-                    }
+                    continue;
                 }
-                if right != left
+                let last = *chars.last().unwrap();
+                if chars[0] == '「' && last != '」' && !is_sentence_separator(last) && line.matches('「').count() != line.matches('」').count()
                 {
-                    bad_quote_lines += 1;
+                    bad_quote_lines += 1
+                }
+                if last == '、'
+                {
+                    bad_comma_lines += 1
                 }
             }
-            if bad_quote_lines > 100 && !self.whitelist_bad_quotes.contains(&name)
+            if bad_quote_lines > 10 && !self.whitelist_bad_quotes.contains(&name)
             {
-                println!("script `{}` may have broken linewraps ({})", name, bad_quote_lines);
+                eprintln!("may have broken linewraps: script `{}` ({})", name, bad_quote_lines);
+            }
+            if bad_comma_lines > 10 && !self.whitelist_bad_commas.contains(&name)
+            {
+                eprintln!("may have broken commas: script `{}` ({})", name, bad_comma_lines);
             }
             Ok(())
         }).unwrap() { }
@@ -1186,7 +1270,9 @@ impl FreqSystem {
                     input.push(run_math(math, variables));
                 }
                 input_data.push(input);
-                output_data.push(run_math(&target.output, variables));
+                let out = run_math(&target.output, variables);
+                eprintln!("want to output {}", out);
+                output_data.push(out);
             }
             let mut model = Vec::new();
             for _ in 0..input_data[0].len()
@@ -1200,16 +1286,16 @@ impl FreqSystem {
                 let print = (i+1)%1000 == 0 || i+1 == limit;
                 if print
                 {
-                    println!("fitting round {}/{}...", i+1, limit);
+                    eprintln!("fitting round {}/{}...", i+1, limit);
                 }
                 fit(&mut model, &input_data, &output_data, rate);
                 if print
                 {
                     let (_, rsq) = predict(&model, &input_data, &output_data);
-                    println!("rsq {}", rsq);
+                    eprintln!("rsq {}", rsq);
                     if rsq.is_nan()
                     {
-                        println!("rsq exploded, halving learning rate and zeroing model");
+                        eprintln!("rsq exploded, halving learning rate and zeroing model");
                         rate /= 2.0;
                         for p in model.iter_mut()
                         {
@@ -1218,17 +1304,9 @@ impl FreqSystem {
                     }
                 }
             }
-            println!("done fitting");
+            eprintln!("done fitting");
             let (_preds, rsq) = predict(&model, &input_data, &output_data);
-            //for out in preds
-            //{
-            //    println!("{}", (1.0-out)*50.0+50.0);
-            //}
-            println!("rsq {}", rsq);
-            //for p in model
-            //{
-            //    println!("{}", p);
-            //}
+            eprintln!("rsq {}", rsq);
             let model_csv = make_csv_line(&model.drain(..).map(|x| x.to_string()).collect::<Vec<_>>());
             let mut inserter = db_stats.prepare_cached("insert or replace into regression values (?,?,?,?)").unwrap();
             inserter.execute(params![name, hash, model_csv, rsq]).unwrap();
@@ -1258,18 +1336,12 @@ impl FreqSystem {
         }
         select_statement += &" from stats";
         
-        println!("using `{}` {:?}", select_statement, using);
-        
-        let base_data = self.db_stats.prepare(&select_statement)
-        .unwrap()
-        .query_map(params![], |row|
+        let base_data = self.db_stats.prepare(&select_statement).unwrap().query_map(params![], |row|
         {
             let mut variables = HashMap::new();
             for i in 0..row.column_count()
             {
-                println!("{:?}", row.get_raw(i));
                 let val : rusqlite::Result<f64> = row.get(i);
-                println!("{:?}", val);
                 let val = val.unwrap();
                 let name = using[i].clone();
                 variables.insert(name, val);
@@ -1281,12 +1353,150 @@ impl FreqSystem {
             Ok(variables)
         }).unwrap().map(|x| x.unwrap()).collect::<Vec<_>>();
         
-        println!("starting");
-        
         for (name, target) in self.regression_config.targets.iter()
         {
             FreqSystem::single_regression(&mut self.db_stats, name, &hash, &base_data, target);
         }
+    }
+    fn single_regression_predict(model : &Vec<f64>, variables : &HashMap<String, f64>, target : &RegressionTarget) -> f64
+    {
+        let mut input = Vec::new();
+        for math in target.input.iter()
+        {
+            input.push(run_math(math, variables));
+        }
+        run_math_stack(vec!(predict_single(&model, &input)), &target.recover, variables)
+    }
+    fn run_regression_predict(&mut self) -> HashMap<String, Vec<f64>>
+    {
+        let mut using = Vec::new();
+        let mut select_statement = "select ".to_string();
+        for (i, var) in self.regression_config.using.iter().enumerate()
+        {
+            if i != 0
+            {
+                select_statement += &",";
+            }
+            select_statement += var;
+            using.push(var.clone());
+        }
+        select_statement += &",name from stats";
+        
+        let base_data = self.db_stats.prepare(&select_statement).unwrap().query_map(params![], |row|
+        {
+            let mut variables = HashMap::new();
+            for i in 0..row.column_count()-1
+            {
+                let val : rusqlite::Result<f64> = row.get(i);
+                let val = val.unwrap();
+                let name = using[i].clone();
+                variables.insert(name, val);
+            }
+            for (name, math) in self.regression_config.vars.iter()
+            {
+                variables.insert(name.clone(), run_math(math, &variables));
+            }
+            let text_name : String = row.get(row.column_count()-1).unwrap();
+            Ok((text_name, variables))
+        }).unwrap().map(|x| x.unwrap()).collect::<Vec<_>>();
+        
+        let mut ret = HashMap::new();
+        for (text_name, input) in base_data
+        {
+            let mut results = Vec::new();
+            for (name, target) in self.regression_config.targets.iter()
+            {
+                let model = self.db_stats.prepare("select name, csv from regression where name=?").unwrap().query_map(params![name], |row|
+                {
+                    let name : String = row.get(0).unwrap();
+                    let csv : String = row.get(1).unwrap();
+                    Ok((name, parse_csv_line(&csv).into_iter().map(|x| x.parse::<f64>().unwrap()).collect()))
+                }).unwrap().map(|x| x.unwrap()).next().unwrap();
+                
+                results.push(FreqSystem::single_regression_predict(&model.1, &input, target));
+            }
+            ret.insert(text_name, results);
+        }
+        ret
+    }
+    fn save_stats(&mut self)
+    {
+        let mut out = File::create("output_stats.txt").unwrap();
+        
+        let complexity_metrics = self.run_regression_predict();
+        
+        let mut finder = self.db_stats.prepare("select * from stats order by name").unwrap();
+        for _ in finder.query_map(params![], |row|
+        {
+            let name : String = row.get(0).unwrap();
+            
+            let kanji_1plus : i64 = row.get(2).unwrap();
+            let kanji_2plus : i64 = row.get(3).unwrap();
+            
+            let chars     : i64 = row.get(4).unwrap();
+            let lexemes   : i64 = row.get(5).unwrap();
+            let sentences : i64 = row.get(6).unwrap();
+            let lines     : i64 = row.get(7).unwrap();
+            
+            let shift_jis_size : i64 = row.get(8).unwrap();
+            
+            let count_han      : f64 = row.get(9).unwrap();
+            let count_hiragana : f64 = row.get(10).unwrap();
+            let count_katakana : f64 = row.get(11).unwrap();
+            let count_jp = count_han+count_hiragana+count_katakana;
+            
+            //let runs_han : i64 = row.get(12).unwrap();
+            //let runs_hiragana : i64 = row.get(13).unwrap();
+            //let runs_katakana : i64 = row.get(14).unwrap();
+            
+            let target_90  : f64 = row.get(15).unwrap();
+            let target_925 : f64 = row.get(16).unwrap();
+            let target_95  : f64 = row.get(17).unwrap();
+            
+            let target_90_good  : u8 = row.get(18).unwrap();
+            let target_925_good : u8 = row.get(19).unwrap();
+            let target_95_good  : u8 = row.get(20).unwrap();
+            
+            let target_90  = format!("{}{:.2}", match target_90_good  { 0 => ">", _ => "" }, target_90);
+            let target_925 = format!("{}{:.2}", match target_925_good { 0 => ">", _ => "" }, target_925);
+            let target_95  = format!("{}{:.2}", match target_95_good  { 0 => ">", _ => "" }, target_95);
+            
+            let complexity = complexity_metrics.get(&name).unwrap();
+            
+            let mut stats = vec!(
+                name,
+                
+                kanji_1plus.to_string(),
+                kanji_2plus.to_string(),
+                
+                chars.to_string(),
+                lexemes.to_string(),
+                sentences.to_string(),
+                lines.to_string(),
+                
+                format!("{:.2}", (chars as f64 / lines as f64)),
+                format!("{:.2}", (count_jp / sentences as f64)),
+                
+                format!("{:.2}",
+                 (count_han / 18000.0)
+                +(count_hiragana / 31500.0)
+                +(count_katakana / 61400.0)
+                ),
+                
+                shift_jis_size.to_string(),
+                
+                target_90,
+                target_925,
+                target_95
+            );
+            
+            stats.extend(complexity.iter().map(|x| format!("{:.2}", x)));
+            
+            out.write(&make_ssv_line(&stats).bytes().collect::<Vec<_>>()).unwrap();
+            out.write(b"\n").unwrap();
+            
+            Ok(())
+        }).unwrap(){}
     }
 }
 
@@ -1312,34 +1522,27 @@ fn get_filenames(location : &str) -> Vec<String>
 
 fn print_help()
 {
-    println!("usage: ./jpstats.exe [mode]");
-    println!("modes:");
-    println!("  update");
-    println!("      re-analyzes scripts and regenerates affected data in databases");
-    println!("  stats");
-    println!("      prints stats as tab-separated values");
+    eprintln!("usage: ./jpstats.exe [mode]");
+    eprintln!("modes:");
+    eprintln!("  update_everything");
+    eprintln!("      re-analyzes scripts and regenerates affected data in databases and save stats to stats.txt");
 }
 
-fn update(system : &mut FreqSystem)
+fn update_everything(system : &mut FreqSystem)
 {
-    for fname in get_filenames("workspace/scripts/")
+    let fnames = get_filenames("workspace/scripts/");
+    for fname in &fnames
     {
         system.load_file(&fname);
     }
+    system.check_formatting_errors();
+    system.delete_removed(&fnames);
     system.run_analysis();
     system.build_merged_freqlists();
     system.run_stats();
     system.run_regression();
-    system.check_formatting_errors();
+    system.save_stats();
 }
-
-/*
-fn stats()
-{
-    
-    make_tsv_line
-}
-*/
 
 fn main()
 {
@@ -1352,9 +1555,9 @@ fn main()
         match arg.as_str()
         {
             
-            "update" =>
+            "update_everything" =>
             {
-                update(&mut system);
+                update_everything(&mut system);
             }
             _ =>
             {
@@ -1398,40 +1601,40 @@ mod tests {
         
         let lines = text.lines().into_iter().collect::<Vec<_>>();
         
-        println!("starting parse...");
+        eprintln!("starting parse...");
         let now = Instant::now();
 
         for line in &lines
         {
             notmecab::parse_to_lexertokens(&dict, &line).unwrap();
         }
-        println!("parse done");
+        eprintln!("parse done");
         let elapsed = now.elapsed();
-        println!("{} seconds", elapsed.as_secs() as f64 + elapsed.subsec_millis() as f64 / 1000.0);
+        eprintln!("{} seconds", elapsed.as_secs() as f64 + elapsed.subsec_millis() as f64 / 1000.0);
         
-        println!("running parse a second time...");
+        eprintln!("running parse a second time...");
         let now = Instant::now();
 
         for line in &lines
         {
             notmecab::parse_to_lexertokens(&dict, &line).unwrap();
         }
-        println!("parse done");
+        eprintln!("parse done");
         let elapsed = now.elapsed();
-        println!("{} seconds", elapsed.as_secs() as f64 + elapsed.subsec_millis() as f64 / 1000.0);
+        eprintln!("{} seconds", elapsed.as_secs() as f64 + elapsed.subsec_millis() as f64 / 1000.0);
         
-        println!("preparing full connection matrix cache...");
+        eprintln!("preparing full connection matrix cache...");
         dict.prepare_full_matrix_cache();
         
-        println!("running parse a second time, but with full connectiom matrix caching...");
+        eprintln!("running parse a second time, but with full connectiom matrix caching...");
         let now = Instant::now();
 
         for line in &lines
         {
             notmecab::parse_to_lexertokens(&dict, &line).unwrap();
         }
-        println!("parse done");
+        eprintln!("parse done");
         let elapsed = now.elapsed();
-        println!("{} seconds", elapsed.as_secs() as f64 + elapsed.subsec_millis() as f64 / 1000.0);
+        eprintln!("{} seconds", elapsed.as_secs() as f64 + elapsed.subsec_millis() as f64 / 1000.0);
     }
 }

@@ -72,6 +72,10 @@ sentence_len ln
 
 target_925 15000 /
 
+>recover
+
+-1 * 1 + 50 * 50 +
+
 
 
 
@@ -98,6 +102,10 @@ prop_runs_kata ln
 >output
 
 target_925 15000 /
+
+>recover
+
+-1 * 1 + 50 * 50 +
 
 
 
@@ -126,6 +134,10 @@ prop_runs_kata ln
 
 target_925 15000 /
 
+>recover
+
+-1 * 1 + 50 * 50 +
+
 
 
 >metric
@@ -153,4 +165,8 @@ sentence_len ln
 >output
 
 target_925 15000 /
+
+>recover
+
+-1 * 1 + 50 * 50 +
 
