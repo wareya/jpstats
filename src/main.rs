@@ -1467,6 +1467,18 @@ impl FreqSystem {
             out_list_2.write(b"\n").unwrap();
         }
         
+        let mut other_stats = HashMap::new();
+        if let Ok(ref mut other_state_file) = File::open(&self.workspace("config/other_stats.txt"))
+        {
+            let other_stats_file = file_to_string(other_state_file);
+            for line in other_stats_file.split("\n")
+            {
+                let mut fields = line.split("\t").map(|x| x.to_string()).collect::<Vec<_>>();
+                let name = fields.remove(0);
+                other_stats.insert(name, fields);
+            }
+        }
+        
         let mut out = File::create(&self.workspace("output_stats.txt")).unwrap();
         let complexity_metrics = self.run_regression_predict();
         let mut finder = self.db_stats.prepare("select * from stats order by name").unwrap();
@@ -1508,7 +1520,7 @@ impl FreqSystem {
             let complexity = complexity_metrics.get(&name).unwrap();
             
             let mut stats = vec!(
-                name,
+                name.clone(),
                 
                 kanji_1plus.to_string(),
                 kanji_2plus.to_string(),
@@ -1535,6 +1547,14 @@ impl FreqSystem {
             );
             
             stats.extend(complexity.iter().map(|x| format!("{:.2}", x)));
+            
+            if let Some(hit) = other_stats.get(&name)
+            {
+                for stat in hit
+                {
+                    stats.insert(1, stat.to_string());
+                }
+            }
             
             out.write(&make_ssv_line(&stats).bytes().collect::<Vec<_>>()).unwrap();
             out.write(b"\n").unwrap();
