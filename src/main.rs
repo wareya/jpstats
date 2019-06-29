@@ -36,6 +36,12 @@ fn make_ssv_line(fields : &[String]) -> String
     writer.write_record(fields).unwrap();
     String::from_utf8(writer.into_inner().unwrap()).unwrap().replace('\n', "")
 }
+fn make_tsv_line(fields : &[String]) -> String
+{
+    let mut writer = csv::WriterBuilder::new().delimiter(b'\t').quote_style(csv::QuoteStyle::Necessary).from_writer(vec!());
+    writer.write_record(fields).unwrap();
+    String::from_utf8(writer.into_inner().unwrap()).unwrap().replace('\n', "")
+}
 fn extract_indexes(fields : &[String], indexes : &[usize]) -> String
 {
     let mut myvec = Vec::new();
@@ -219,7 +225,8 @@ fn lemmainfo_to_string(lemma : &String, info : &LemmaInfo) -> String
 {
     let mut ret = format!("{},{}", info.count.to_string(), lemma.clone());
     let mut spellings = info.spellings.iter().map(|(a,b)| (a.clone(), *b)).collect::<Vec<(String, f64)>>();
-    spellings.sort_unstable_by(|a,b| cmp_floats(b.1, a.1));
+    spellings.sort_unstable_by(|a,b| a.0.cmp(&b.0));
+    spellings.sort_by(|a,b| cmp_floats(b.1, a.1));
     for (spelling, count) in spellings.drain(..)
     {
         ret += &format!(",{},{}", count, spelling);
@@ -589,6 +596,8 @@ struct FreqSystem {
     analyzer : Analyzer,
     furi_regex : Regex,
     
+    workspace_folder : String,
+    
     lemma_indexes : Vec<usize>,
     spelling_indexes : Vec<usize>,
     
@@ -601,21 +610,28 @@ struct FreqSystem {
     whitelist_bad_quotes : HashSet<String>,
     whitelist_bad_commas : HashSet<String>,
     
+    tests_disable : bool,
+    
     regression_config : RegressionConfig,
 }
 
 impl FreqSystem {
-    fn init() -> FreqSystem
+    fn init(workspace_folder : &str) -> FreqSystem
     {
+        let workspace_folder = workspace_folder.to_string();
+        macro_rules! workspace { ( $x:expr ) =>
+        {
+            &format!("{}/{}", workspace_folder, $x)
+        } }
         // filtered and deduplicated on insertion into db
-        let db_texts = Connection::open(Path::new("workspace/texts.db")).unwrap();
+        let db_texts = Connection::open(Path::new(workspace!("texts.db"))).unwrap();
         db_texts.execute("create table if not exists texts (name text unique, sha256 text, content text)", params![]).unwrap();
         
-        let db_freqs = Connection::open(Path::new("workspace/frequency.db")).unwrap();
+        let db_freqs = Connection::open(Path::new(workspace!("frequency.db"))).unwrap();
         db_freqs.execute("create table if not exists freqlists (name text unique, sha256 text, freqlist text)", params![]).unwrap();
         db_freqs.execute("create table if not exists merged (name text unique, sha256 text, freqlist text)", params![]).unwrap();
         
-        let db_stats = Connection::open(Path::new("workspace/stats.db")).unwrap();
+        let db_stats = Connection::open(Path::new(workspace!("stats.db"))).unwrap();
         db_stats.execute(
             "create table if not exists stats
             (   name text unique,
@@ -656,7 +672,7 @@ impl FreqSystem {
         let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
         let matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
         let unkdef = BufReader::new(File::open("data/char.bin").unwrap());
-        let mut userdict = BufReader::new(File::open("workspace/config/userdict.csv").unwrap());
+        let mut userdict = BufReader::new(File::open(workspace!("config/userdict.csv")).unwrap());
         
         let mut dict = Dict::load(sysdic, unkdic, matrix, unkdef).unwrap();
         dict.load_user_dictionary(&mut userdict).unwrap();
@@ -668,18 +684,18 @@ impl FreqSystem {
         let mut lemma_indexes;
         let mut spelling_indexes;
         
-        let index_lines = file_to_string(&mut File::open("workspace/config/indexes.txt").unwrap());
+        let index_lines = file_to_string(&mut File::open(workspace!("config/indexes.txt")).unwrap());
         let mut index_lines = index_lines.lines();
         lemma_indexes    = parse_csv_line(index_lines.next().unwrap()).iter().map(|s| s.parse::<usize>().unwrap()).collect::<Vec<_>>();
         spelling_indexes = parse_csv_line(index_lines.next().unwrap()).iter().map(|s| s.parse::<usize>().unwrap()).collect::<Vec<_>>();
         
-        let punctuation_filters = read_filters(&file_to_string(&mut File::open("workspace/config/parse_filters.txt").unwrap()) , &lemma_indexes[..], &spelling_indexes[..]);
-        let base_filters  = read_filters(&file_to_string(&mut File::open("workspace/config/base_filters.txt").unwrap()) , &lemma_indexes[..], &spelling_indexes[..]);
-        let vocab_filters = read_filters(&file_to_string(&mut File::open("workspace/config/vocab_filters.txt").unwrap()), &lemma_indexes[..], &spelling_indexes[..]);
+        let punctuation_filters = read_filters(&file_to_string(&mut File::open(workspace!("config/parse_filters.txt")).unwrap()) , &lemma_indexes[..], &spelling_indexes[..]);
+        let base_filters  = read_filters(&file_to_string(&mut File::open(workspace!("config/base_filters.txt")).unwrap()) , &lemma_indexes[..], &spelling_indexes[..]);
+        let vocab_filters = read_filters(&file_to_string(&mut File::open(workspace!("config/vocab_filters.txt")).unwrap()), &lemma_indexes[..], &spelling_indexes[..]);
         
-        if let Ok(mut common_left_edge_file) = File::open("workspace/config/common_edges_left.txt")
+        if let Ok(mut common_left_edge_file) = File::open(workspace!("config/common_edges_left.txt"))
         {
-            if let Ok(mut common_right_edge_file) = File::open("workspace/config/common_edges_right.txt")
+            if let Ok(mut common_right_edge_file) = File::open(workspace!("config/common_edges_right.txt"))
             {
                 let fast_edges_left_text  = file_to_string(&mut common_left_edge_file);
                 let fast_edges_right_text = file_to_string(&mut common_right_edge_file);
@@ -689,15 +705,16 @@ impl FreqSystem {
             }
         }
         
-        let merge_blacklist = file_to_string(&mut File::open("workspace/config/merge_blacklist.txt").unwrap()).lines().map(|x| x.trim().to_string()).collect();
+        let merge_blacklist = file_to_string(&mut File::open(workspace!("config/merge_blacklist.txt")).unwrap()).lines().map(|x| x.trim().to_string()).collect();
         
-        let test_whitelist = file_to_string(&mut File::open("workspace/config/allowed_test_failures.txt").unwrap()).lines().map(|x| x.to_string()).collect::<Vec<_>>();
+        let test_whitelist = file_to_string(&mut File::open(workspace!("config/allowed_test_failures.txt")).unwrap()).lines().map(|x| x.to_string()).collect::<Vec<_>>();
         let whitelist_bad_quotes = test_whitelist.iter().filter(|x| x.starts_with("quotes:")).map(|x| x.split(':').nth(1).unwrap().to_string()).collect();
         let whitelist_bad_commas = test_whitelist.iter().filter(|x| x.starts_with("commas:")).map(|x| x.split(':').nth(1).unwrap().to_string()).collect();
+        let tests_disable = test_whitelist.get(0) == Some(&"all".to_string());
         
-        let regression_config = RegressionConfig::load(&file_to_string(&mut File::open("workspace/config/regression.txt").unwrap()));
+        let regression_config = RegressionConfig::load(&file_to_string(&mut File::open(workspace!("config/regression.txt")).unwrap()));
         
-        FreqSystem{db_texts, db_freqs, db_stats, analyzer, furi_regex, lemma_indexes, spelling_indexes, punctuation_filters, base_filters, vocab_filters, merge_blacklist, whitelist_bad_quotes, whitelist_bad_commas, regression_config }
+        FreqSystem{db_texts, db_freqs, db_stats, analyzer, furi_regex, workspace_folder, lemma_indexes, spelling_indexes, punctuation_filters, base_filters, vocab_filters, merge_blacklist, whitelist_bad_quotes, whitelist_bad_commas, tests_disable, regression_config }
     }
     fn load_file(&mut self, path : &str)
     {
@@ -814,7 +831,8 @@ impl FreqSystem {
     fn freqmap_to_freqstr(&self, mut freqlist : HashMap<String, LemmaInfo>) -> String
     {
         let mut freqlist = freqlist.drain().collect::<Vec<_>>();
-        freqlist.sort_unstable_by(|(_, a), (_, b)| b.count.partial_cmp(&a.count).unwrap());
+        freqlist.sort_unstable_by(|(a, _), (b, _)| a.cmp(&b));
+        freqlist.sort_by(|(_, a), (_, b)| cmp_floats(b.count, a.count));
         freqlist.iter().map(|(key, val)| lemmainfo_to_string(key, val)).collect::<Vec<_>>().join("\n")
     }
     fn run_analysis(&mut self)
@@ -898,7 +916,7 @@ impl FreqSystem {
                 eprintln!("skipping ({}) (blacklisted)", name);
                 return Ok(());
             }
-            print!("testing a list ({}) ...", name);
+            eprint!("testing a list ({}) ...", name);
             
             let mut list = self.freqstr_to_freqmap(&lines);
             let total = self.filtered_token_count(&list, &filters);
@@ -909,11 +927,11 @@ impl FreqSystem {
             }
             eprintln!(" collecting ({})", total);
             let norm = 1_000_000.0 / total;
-            for (key, mut info) in list.drain()
+            for (lemma, mut info) in list.drain()
             {
                 info.multiply(norm);
-                let entries = semi_merged.entry(key).or_insert(vec!());
-                entries.push(info);
+                let entries = semi_merged.entry(lemma.clone()).or_insert(vec!());
+                entries.push(lemmainfo_to_string(&lemma, &info));
             }
             count += 1;
             collected_names.push(name.clone());
@@ -934,15 +952,16 @@ impl FreqSystem {
         
         eprintln!("collected {} lists; merging", count);
         let mut merged = HashMap::new();
-        for (key, mut entries) in semi_merged.drain()
+        for (lemma, mut entries) in semi_merged.drain()
         {
+            let mut entries = entries.drain(..).map(|x| lemmainfo_from_string(&self, &x).1).collect::<Vec<_>>();
             while entries.len() < count
             {
                 entries.push(LemmaInfo::blank());
             }
-            entries.sort_by(|a, b| a.count.partial_cmp(&b.count).unwrap());
-            let target = merged.entry(key).or_insert(LemmaInfo::blank());
-            for entry in entries.drain(median_cropping..count-median_cropping*2)
+            entries.sort_by(|a, b| cmp_floats(a.count, b.count));
+            let target = merged.entry(lemma).or_insert(LemmaInfo::blank());
+            for entry in entries.drain(median_cropping..entries.len()-median_cropping)
             {
                 target.merge(entry);
             }
@@ -1019,6 +1038,7 @@ impl FreqSystem {
     fn calc_freq_target(&self, freqlist : &Vec<(String, f64)>, local_list : &HashMap<String, f64>, target_count : f64) -> (f64, bool)
     {
         let mut local_list_vec = local_list.iter().map(|(a, b)| (a.clone(), *b)).collect::<Vec<_>>();
+        local_list_vec.sort_unstable_by(|(a, _), (b, _)| a.cmp(&b));
         local_list_vec.sort_by(|(_, a), (_, b)| cmp_floats(*b, *a));
         
         let leeway = 20;
@@ -1076,6 +1096,7 @@ impl FreqSystem {
     fn run_stats(&mut self)
     {
         let mut freqlist_vocab = self.get_merged_freq_list("vocab").drain().map(|(a, b)| (a, b.count)).collect::<Vec<_>>();
+        freqlist_vocab.sort_unstable_by(|(a, _), (b, _)| a.cmp(&b));
         freqlist_vocab.sort_by(|(_, a), (_, b)| cmp_floats(*b, *a));
         
         let filters = self.get_filters(true);
@@ -1217,6 +1238,10 @@ impl FreqSystem {
     }
     fn check_formatting_errors(&mut self)
     {
+        if self.tests_disable
+        {
+            return;
+        }
         let mut finder = self.db_texts.prepare("select name, sha256, content from texts").unwrap();
         eprintln!("checking scripts for possible formatting problems");
         for _ in finder.query_map(params![], |row|
@@ -1421,10 +1446,29 @@ impl FreqSystem {
     }
     fn save_stats(&mut self)
     {
-        let mut out = File::create("output_stats.txt").unwrap();
+        let mut out_list_1 = File::create(&self.workspace("freqlist.txt")).unwrap();
         
+        let mut freqlist_vocab = self.get_merged_freq_list("vocab").drain().collect::<Vec<_>>();
+        freqlist_vocab.sort_unstable_by(|(a, _), (b, _)| a.cmp(&b));
+        freqlist_vocab.sort_by(|(_, a), (_, b)| cmp_floats(b.count, a.count));
+        for (lemma, info) in freqlist_vocab
+        {
+            out_list_1.write(&make_tsv_line(&parse_csv_line(&lemmainfo_to_string(&lemma, &info))).bytes().collect::<Vec<_>>()).unwrap();
+            out_list_1.write(b"\n").unwrap();
+        }
+        
+        let mut out_list_2 = File::create(&self.workspace("freqlist_alt.txt")).unwrap();
+        let mut freqlist_all   = self.get_merged_freq_list("all")  .drain().collect::<Vec<_>>();
+        freqlist_all.sort_unstable_by(|(a, _), (b, _)| a.cmp(&b));
+        freqlist_all.sort_by(|(_, a), (_, b)| cmp_floats(b.count, a.count));
+        for (lemma, info) in freqlist_all
+        {
+            out_list_2.write(&make_tsv_line(&parse_csv_line(&lemmainfo_to_string(&lemma, &info))).bytes().collect::<Vec<_>>()).unwrap();
+            out_list_2.write(b"\n").unwrap();
+        }
+        
+        let mut out = File::create(&self.workspace("output_stats.txt")).unwrap();
         let complexity_metrics = self.run_regression_predict();
-        
         let mut finder = self.db_stats.prepare("select * from stats order by name").unwrap();
         for _ in finder.query_map(params![], |row|
         {
@@ -1498,6 +1542,26 @@ impl FreqSystem {
             Ok(())
         }).unwrap(){}
     }
+    
+    fn workspace(&mut self, sub : &str) -> String
+    {
+        format!("{}/{}", self.workspace_folder, sub)
+    }
+    fn update_everything(&mut self)
+    {
+        let fnames = get_filenames(&self.workspace("scripts/"));
+        for fname in &fnames
+        {
+            self.load_file(&fname);
+        }
+        self.check_formatting_errors();
+        self.delete_removed(&fnames);
+        self.run_analysis();
+        self.build_merged_freqlists();
+        self.run_stats();
+        self.run_regression();
+        self.save_stats();
+    }
 }
 
 fn hash_file(file : &mut File) -> String
@@ -1528,25 +1592,8 @@ fn print_help()
     eprintln!("      re-analyzes scripts and regenerates affected data in databases and save stats to stats.txt");
 }
 
-fn update_everything(system : &mut FreqSystem)
-{
-    let fnames = get_filenames("workspace/scripts/");
-    for fname in &fnames
-    {
-        system.load_file(&fname);
-    }
-    system.check_formatting_errors();
-    system.delete_removed(&fnames);
-    system.run_analysis();
-    system.build_merged_freqlists();
-    system.run_stats();
-    system.run_regression();
-    system.save_stats();
-}
-
 fn main()
 {
-    let mut system = FreqSystem::init();
     
     let args = env::args().collect::<Vec<_>>();
     
@@ -1557,7 +1604,10 @@ fn main()
             
             "update_everything" =>
             {
-                update_everything(&mut system);
+                let default = "workspace".to_string();
+                let workspace_folder = args.get(2).unwrap_or(&default);
+                let mut system = FreqSystem::init(workspace_folder);
+                system.update_everything();
             }
             _ =>
             {
