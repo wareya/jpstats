@@ -1,0 +1,4 @@
+hanahira;https://vndb.org/v5244
+chronobox;https://vndb.org/v20144
+chronobox trials;
+kanojo no seiiki;https://vndb.org/v16150

@@ -1,0 +1,2 @@
+# proper nouns
+l,1,固有名詞

@@ -3,4 +3,7 @@
 /data
 /workspace/*.db
 /workspace/scripts
+/narou/*.db
+/narou/scripts
 /trash
+*.html
