@@ -1,9 +1,11 @@
 /target
 **/*.rs.bk
 /data
-/workspace/*.db
+/workspace/frequency.db
+/workspace/texts.db
 /workspace/scripts
-/narou/*.db
+/narou/frequency.db
+/narou/texts.db
 /narou/scripts
 /trash
 *.html
