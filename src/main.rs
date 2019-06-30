@@ -1296,7 +1296,7 @@ impl FreqSystem {
                 }
                 input_data.push(input);
                 let out = run_math(&target.output, variables);
-                eprintln!("want to output {}", out);
+                //eprintln!("want to output {}", out);
                 output_data.push(out);
             }
             let mut model = Vec::new();

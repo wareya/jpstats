@@ -1,0 +1,172 @@
+>using
+
+sentences
+count_han
+count_hira
+count_kata
+runs_han
+runs_hira
+runs_kata
+target_925
+
+
+
+>mapping
+
+avg_count count_han count_hira count_kata + + 3 /
+avg_runs runs_han runs_hira runs_kata + + 3 /
+
+prop_han count_han avg_count /
+prop_hira count_hira avg_count /
+prop_kata count_kata avg_count /
+
+prop_runs_han runs_han avg_runs /
+prop_runs_hira runs_hira avg_runs /
+prop_runs_kata runs_kata avg_runs /
+
+runlen_han count_han runs_han /
+runlen_hira count_hira runs_hira /
+runlen_kata count_kata runs_kata /
+
+norm_han runlen_han prop_han *
+norm_hira runlen_hira prop_hira *
+norm_kata runlen_kata prop_kata *
+
+sentence_han count_han sentences /
+sentence_hira count_hira sentences /
+sentence_kata count_kata sentences /
+
+runs_sentences avg_runs 3 * sentences /
+sentence_len avg_count 3 * sentences /
+
+
+
+>metric
+
+a
+
+>input
+
+norm_han
+norm_hira
+norm_kata
+
+prop_han ln
+prop_hira ln
+prop_kata ln
+
+prop_runs_han ln
+prop_runs_hira ln
+prop_runs_kata ln
+
+sentence_han
+sentence_hira
+sentence_kata
+
+1 runs_sentences /
+sentence_len ln
+
+1
+
+>output
+
+target_925 15000 /
+
+>recover
+
+-1 * 1 + 50 * 50 +
+
+
+
+
+>metric
+
+b
+
+>input
+
+runlen_han
+runlen_hira
+runlen_kata
+
+prop_han ln
+prop_hira ln
+prop_kata ln
+
+prop_runs_han ln
+prop_runs_hira ln
+prop_runs_kata ln
+
+1
+
+>output
+
+target_925 15000 /
+
+>recover
+
+-1 * 1 + 50 * 50 +
+
+
+
+
+>metric
+
+c
+
+>input
+
+norm_han
+norm_hira
+norm_kata
+
+prop_han ln
+prop_hira ln
+prop_kata ln
+
+prop_runs_han ln
+prop_runs_hira ln
+prop_runs_kata ln
+
+1
+
+>output
+
+target_925 15000 /
+
+>recover
+
+-1 * 1 + 50 * 50 +
+
+
+
+>metric
+
+d
+
+>input
+
+norm_han
+norm_hira
+norm_kata
+
+prop_han ln
+prop_hira ln
+prop_kata ln
+
+prop_runs_han ln
+prop_runs_hira ln
+prop_runs_kata ln
+
+sentence_len ln
+
+1
+
+>output
+
+target_925 15000 /
+
+>recover
+
+-1 * 1 + 50 * 50 +
+

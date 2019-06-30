@@ -7,5 +7,8 @@
 /narou/frequency.db
 /narou/texts.db
 /narou/scripts
+/novels/frequency.db
+/novels/texts.db
+/novels/scripts
 /trash
 *.html

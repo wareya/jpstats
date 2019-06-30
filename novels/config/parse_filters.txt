@@ -1,0 +1,6 @@
+# punctuation
+l,0,補助記号
+# symbols
+l,0,記号
+# spaces
+l,0,空白

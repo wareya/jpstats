@@ -1,0 +1,82 @@
+>using
+
+sentences
+count_han
+count_hira
+count_kata
+runs_han
+runs_hira
+runs_kata
+target_925
+
+>regression
+
+regression_a a
+regression_b b
+regression_c c
+regression_d d
+
+>using
+
+kanji_1plus
+kanji_2plus
+
+chars
+lexes
+sentences
+lines
+
+sjis_bytes
+
+count_han
+count_hira
+count_kata
+
+runs_han
+runs_hira
+runs_kata
+
+target_90
+target_925
+target_95
+
+>mapping
+
+chars_line chars lines /
+chars_sentence chars sentences /
+hours kanji 18000 / hiragana 31500 / katakana 61400 / + +
+metric_a 2 regression_a - 50 *
+
+>columns
+
+kanji<wbr>(unique)
+kanji<wbr>(2+)
+characters
+lexemes
+sentences
+lines
+chars<wbr>/line
+chars<wbr>/sentence
+sjis<wbr>bytes
+hours<wbr>estimate
+custom<wbr>metric
+freqlist<wbr>90%<wbr>target
+freqlist<wbr>92.5%<wbr>target
+freqlist<wbr>95%<wbr>target
+
+>output
+
+kanji_1plus
+kanji_2plus
+chars
+lexes
+sentences
+lines
+chars_line
+chars_sentence
+sjis_bytes
+hours
+metric_a
+target_90
+target_925
+target_95
