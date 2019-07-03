@@ -12,4 +12,6 @@ No quality guarantees of any kind are made regarding the analysis methods used h
 
 # License
 
-Licensed under the Apache License, version 2.0. Copyright 2019. https://www.apache.org/licenses/LICENSE-2.0
+Included program source code files are licensed under the Apache License, version 2.0. Copyright 2019. https://www.apache.org/licenses/LICENSE-2.0
+
+Included source code files are released into the public domain and also licensed under the Creative Commons Zero license, any version.
