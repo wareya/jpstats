@@ -6,6 +6,7 @@
 # Setting up unidic
 
 3) download a copy of unidic: https://unidic.ninjal.ac.jp/
+ * if your version of unidic is not ***EXACTLY*** unidic-csj-2.3.0.zip, you ***MUST*** delete the "jpstats/workspace/common_edges_right.txt" and "jpstats/workspace/common_edges_left.txt" files. ***PERIOD.***
 4) there are two versions of unidic: written language and spoken language. I feel like spoken language tends to give slightly better results, even on literature
 5) extract "matrix.bin", "sys.dic", "char.bin", "unk.dic", "rewrite.def", "right-id.def", and "left-id.def" to "jpstats/data"
 
