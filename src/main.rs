@@ -1,11 +1,11 @@
-use std::io::{BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::fs::{File, read_dir};
 use std::path::Path;
 
 use std::collections::{HashMap, HashSet};
 
 use regex::Regex;
-use notmecab::{Dict, TokenType, LexerToken};
+use notmecab::{Blob, Dict, TokenType, LexerToken};
 use rusqlite::{params, Connection};
 
 use sha2::{Sha256, Digest};
@@ -129,7 +129,7 @@ impl Analyzer {
         else
         {
             FreqEvent::User {
-                feature : self.dict.read_feature_string_by_source(TokenType::User, other.feature_offset).unwrap()
+                feature : self.dict.read_feature_string_by_source(TokenType::User, other.feature_offset).to_string()
             }
         }
     }
@@ -169,7 +169,7 @@ impl Analyzer {
     {
         match event
         {
-            FreqEvent::Normal{feature_offset} => self.dict.read_feature_string_by_source(TokenType::Normal, *feature_offset).unwrap(),
+            FreqEvent::Normal{feature_offset} => self.dict.read_feature_string_by_source(TokenType::Normal, *feature_offset).to_string(),
             FreqEvent::User{feature} => format!("{}", feature)
         }
     }
@@ -668,16 +668,16 @@ impl FreqSystem {
         db_stats.execute("create table if not exists regression (name text unique, sha256 text, csv text, rsq real)", params![]).unwrap();
         
         // you need to acquire a mecab dictionary and place these files here manually
-        let sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
-        let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
-        let matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
-        let unkdef = BufReader::new(File::open("data/char.bin").unwrap());
-        let mut userdict = BufReader::new(File::open(workspace!("config/userdict.csv")).unwrap());
+        let sysdic = Blob::open("data/sys.dic").unwrap();
+        let unkdic = Blob::open("data/unk.dic").unwrap();
+        let matrix = Blob::open("data/matrix.bin").unwrap();
+        let unkdef = Blob::open("data/char.bin").unwrap();
+        let userdict = Blob::open(workspace!("config/userdict.csv")).unwrap();
         
         let mut dict = Dict::load(sysdic, unkdic, matrix, unkdef).unwrap();
-        dict.load_user_dictionary(&mut userdict).unwrap();
+        dict.load_user_dictionary(userdict).unwrap();
         
-        let analyzer = Analyzer::init(dict);
+        let mut analyzer = Analyzer::init(dict);
         
         let furi_regex = Regex::new(r"《[^》]*》").unwrap();
         
