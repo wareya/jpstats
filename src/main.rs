@@ -1644,17 +1644,16 @@ fn main()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::BufRead;
     
-    use std::time::{Duration, Instant};
+    use std::time::Instant;
     
     #[test]
     fn test_parse_speed()
     {
-        let sysdic = BufReader::new(File::open("data/sys.dic").unwrap());
-        let unkdic = BufReader::new(File::open("data/unk.dic").unwrap());
-        let matrix = BufReader::new(File::open("data/matrix.bin").unwrap());
-        let unkdef = BufReader::new(File::open("data/char.bin").unwrap());
+        let sysdic = Blob::open("data/sys.dic").unwrap();
+        let unkdic = Blob::open("data/unk.dic").unwrap();
+        let matrix = Blob::open("data/matrix.bin").unwrap();
+        let unkdef = Blob::open("data/char.bin").unwrap();
         
         let mut dict = Dict::load(sysdic, unkdic, matrix, unkdef).unwrap();
         
@@ -1674,10 +1673,14 @@ mod tests {
         eprintln!("starting parse...");
         let now = Instant::now();
 
+        let mut total_cost = 0;
         for line in &lines
         {
-            notmecab::parse_to_lexertokens(&dict, &line).unwrap();
+            let cost = notmecab::parse_to_lexertokens(&dict, &line).unwrap().1;
+            eprintln!("{}", cost);
+            total_cost += cost;
         }
+        eprintln!("total cost: {}", total_cost);
         eprintln!("parse done");
         let elapsed = now.elapsed();
         eprintln!("{} seconds", elapsed.as_secs() as f64 + elapsed.subsec_millis() as f64 / 1000.0);
