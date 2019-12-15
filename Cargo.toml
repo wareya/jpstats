@@ -11,7 +11,7 @@ exclude = [
 license = "Apache-2.0"
 
 [dependencies]
-notmecab = "0.4.0"
+notmecab = { path = "../notmecab-rs" }
 regex = "1"
 sha2 = "0.8"
 csv = "1"

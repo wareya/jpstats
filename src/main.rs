@@ -95,7 +95,7 @@ fn is_comma_or_quote_etc(c : char) -> bool
 }
 fn is_countable_char(c : char) -> bool
 {
-    !(is_sentence_separator(c) || is_comma_or_quote_etc(c))
+    !"「」　。".contains(c)
 }
 
 
@@ -120,7 +120,7 @@ impl Analyzer {
             dict
         }
     }
-    fn make_freqevent(&self, other : LexerToken) -> FreqEvent
+    fn make_freqevent(&self, other : &LexerToken) -> FreqEvent
     {
         if other.kind == TokenType::Normal
         {
@@ -135,13 +135,14 @@ impl Analyzer {
     }
     fn analyze_text(&self, text : &str) -> HashMap<FreqEvent, u64>
     {
+        let mut cache = notmecab::Cache::new();
         let mut events = HashMap::new();
+        let mut parse = Vec::new();
         for line in text.lines()
         {
-            let parse = notmecab::parse_to_lexertokens(&self.dict, &line);
-            if let Some(parse) = parse
+            if self.dict.tokenize_with_cache(&mut cache, line, &mut parse).is_ok()
             {
-                for token in parse.0
+                for token in &parse
                 {
                     if token.kind == TokenType::UNK
                     {
@@ -160,7 +161,7 @@ impl Analyzer {
             }
             else
             {
-                panic!("failed to parse following line\n{}",line);
+                panic!("failed to parse following line\n{}", line);
             }
         }
         events
@@ -681,8 +682,8 @@ impl FreqSystem {
         
         let furi_regex = Regex::new(r"《[^》]*》").unwrap();
         
-        let mut lemma_indexes;
-        let mut spelling_indexes;
+        let lemma_indexes;
+        let spelling_indexes;
         
         let index_lines = file_to_string(&mut File::open(workspace!("config/indexes.txt")).unwrap());
         let mut index_lines = index_lines.lines();
@@ -1670,14 +1671,17 @@ mod tests {
         
         let lines = text.lines().into_iter().collect::<Vec<_>>();
         
+        let mut cache = notmecab::Cache::new();
+        let mut out = Vec::new();
+        
         eprintln!("starting parse...");
         let now = Instant::now();
 
         let mut total_cost = 0;
         for line in &lines
         {
-            let cost = notmecab::parse_to_lexertokens(&dict, &line).unwrap().1;
-            eprintln!("{}", cost);
+            let cost = dict.tokenize_with_cache(&mut cache, &line, &mut out).unwrap();
+            //eprintln!("{}", cost);
             total_cost += cost;
         }
         eprintln!("total cost: {}", total_cost);
@@ -1690,7 +1694,7 @@ mod tests {
 
         for line in &lines
         {
-            notmecab::parse_to_lexertokens(&dict, &line).unwrap();
+            dict.tokenize_with_cache(&mut cache, &line, &mut out).unwrap();
         }
         eprintln!("parse done");
         let elapsed = now.elapsed();
@@ -1699,12 +1703,12 @@ mod tests {
         eprintln!("preparing full connection matrix cache...");
         dict.prepare_full_matrix_cache();
         
-        eprintln!("running parse a second time, but with full connectiom matrix caching...");
+        eprintln!("running parse one more time, but with full connectiom matrix caching...");
         let now = Instant::now();
 
         for line in &lines
         {
-            notmecab::parse_to_lexertokens(&dict, &line).unwrap();
+            dict.tokenize_with_cache(&mut cache, &line, &mut out).unwrap();
         }
         eprintln!("parse done");
         let elapsed = now.elapsed();
