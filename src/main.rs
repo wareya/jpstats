@@ -60,12 +60,12 @@ fn file_to_string(file : &mut File) -> String
 fn is_hiragana(c : char) -> bool
 {
     let c = c as u32;
-    (c >= 0x3040 && c <= 0x309f)
+    c >= 0x3040 && c <= 0x309f
 }
 fn is_katakana(c : char) -> bool
 {
     let c = c as u32;
-    (c >= 0x30a0 && c <= 0x30ff)
+    c >= 0x30a0 && c <= 0x30ff
 }
 fn is_han(c : char) -> bool
 {
@@ -222,15 +222,16 @@ fn get_shift_jis_size(c : char) -> usize
     return 2;
 }
 
-fn lemmainfo_to_string(lemma : &String, info : &LemmaInfo) -> String
+fn lemmainfo_to_string(lemma : &String, info : &LemmaInfo, mut round : bool) -> String
 {
-    let mut ret = format!("{},{}", info.count.to_string(), lemma.clone());
+    round = false;
+    let mut ret = if round { format!("{:.3},{}", info.count, lemma) } else { format!("{},{}", info.count, lemma) };
     let mut spellings = info.spellings.iter().map(|(a,b)| (a.clone(), *b)).collect::<Vec<(String, f64)>>();
     spellings.sort_unstable_by(|a,b| a.0.cmp(&b.0));
     spellings.sort_by(|a,b| cmp_floats(b.1, a.1));
     for (spelling, count) in spellings.drain(..)
     {
-        ret += &format!(",{},{}", count, spelling);
+        ret += &if round { format!(",{:.3},{}", info.count, lemma,) } else { format!(",{},{}", count, spelling) };
     }
     ret
 }
@@ -248,7 +249,7 @@ fn lemmainfo_from_string(this : &FreqSystem, text : &str) -> (String, LemmaInfo)
     let spellings_each_len = this.spelling_indexes.len()+1;
     if spellings_fields%spellings_each_len != 0
     {
-        panic!("error: misalignment between fields and spellings");
+        panic!("error: misalignment between fields and spellings\n{} {} {}\n{:?}", fields.len(), spellings_start, spellings_each_len, fields);
     }
     let spellings_count = spellings_fields/spellings_each_len;
     
@@ -834,7 +835,7 @@ impl FreqSystem {
         let mut freqlist = freqlist.drain().collect::<Vec<_>>();
         freqlist.sort_unstable_by(|(a, _), (b, _)| a.cmp(&b));
         freqlist.sort_by(|(_, a), (_, b)| cmp_floats(b.count, a.count));
-        freqlist.iter().map(|(key, val)| lemmainfo_to_string(key, val)).collect::<Vec<_>>().join("\n")
+        freqlist.iter().map(|(key, val)| lemmainfo_to_string(key, val, false)).collect::<Vec<_>>().join("\n")
     }
     fn run_analysis(&mut self)
     {
@@ -932,7 +933,7 @@ impl FreqSystem {
             {
                 info.multiply(norm);
                 let entries = semi_merged.entry(lemma.clone()).or_insert(vec!());
-                entries.push(lemmainfo_to_string(&lemma, &info));
+                entries.push(lemmainfo_to_string(&lemma, &info, false));
             }
             count += 1;
             collected_names.push(name.clone());
@@ -1454,7 +1455,7 @@ impl FreqSystem {
         freqlist_vocab.sort_by(|(_, a), (_, b)| cmp_floats(b.count, a.count));
         for (lemma, info) in freqlist_vocab
         {
-            out_list_1.write(&make_tsv_line(&parse_csv_line(&lemmainfo_to_string(&lemma, &info))).bytes().collect::<Vec<_>>()).unwrap();
+            out_list_1.write(&make_tsv_line(&parse_csv_line(&lemmainfo_to_string(&lemma, &info, true))).bytes().collect::<Vec<_>>()).unwrap();
             out_list_1.write(b"\n").unwrap();
         }
         
@@ -1464,7 +1465,7 @@ impl FreqSystem {
         freqlist_all.sort_by(|(_, a), (_, b)| cmp_floats(b.count, a.count));
         for (lemma, info) in freqlist_all
         {
-            out_list_2.write(&make_tsv_line(&parse_csv_line(&lemmainfo_to_string(&lemma, &info))).bytes().collect::<Vec<_>>()).unwrap();
+            out_list_2.write(&make_tsv_line(&parse_csv_line(&lemmainfo_to_string(&lemma, &info, true))).bytes().collect::<Vec<_>>()).unwrap();
             out_list_2.write(b"\n").unwrap();
         }
         

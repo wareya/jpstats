@@ -172,7 +172,7 @@ name = "jpstats"
 version = "0.1.0"
 dependencies = [
  "csv 1.0.5 (registry+https://github.com/rust-lang/crates.io-index)",
- "notmecab 0.5.0",
+ "notmecab 0.5.1",
  "regex 1.1.2 (registry+https://github.com/rust-lang/crates.io-index)",
  "rusqlite 0.17.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "sha2 0.8.0 (registry+https://github.com/rust-lang/crates.io-index)",
@@ -230,7 +230,7 @@ dependencies = [
 
 [[package]]
 name = "notmecab"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "hashbrown 0.6.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "memmap 0.7.0 (registry+https://github.com/rust-lang/crates.io-index)",
